@@ -10,7 +10,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # --- הגדרות בטוחות לשרת ---
-# המערכת תנסה למשוך מהשרת, ואם לא תמצא תשתמש בברירת המחדל שלך
 TOKEN = os.getenv("BOT_TOKEN", "8670146396:AAFM4nhtzxS9NEfD3Dn-RkAGkftYelMXqug")
 YOUTUBE_API_KEY = os.getenv("YT_API_KEY", "AIzaSyAKK4VTbQJ_8tsHfxb2tcDZ9SSR9gWXH-0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 8708085965))
@@ -21,11 +20,11 @@ executor = ThreadPoolExecutor(max_workers=20)
 def load_db():
     if not os.path.exists(DB_FILE): return {}
     try:
-        with open(DB_FILE, "r") as f: return json.load(f)
+        with open(DB_FILE, "r", encoding='utf-8') as f: return json.load(f)
     except: return {}
 
 def save_db(db):
-    with open(DB_FILE, "w") as f: json.dump(db, f)
+    with open(DB_FILE, "w", encoding='utf-8') as f: json.dump(db, f, indent=4)
 
 def clean_filename(title):
     clean = re.sub(r'[\\/*?:"<>|]', "", title)
@@ -33,24 +32,16 @@ def clean_filename(title):
 
 def get_main_keyboard(user_id, searching=False):
     if searching:
-        return ReplyKeyboardMarkup(KeyboardButton("❌ ביטול פעולה"), resize_keyboard=True, is_persistent=True)
+        return ReplyKeyboardMarkup([[KeyboardButton("❌ ביטול פעולה")]], resize_keyboard=True, is_persistent=True)
     
     kb = [
         [KeyboardButton("🎤 חיפוש לפי שם זמר"), KeyboardButton("🎵 חיפוש לפי שם שיר")],
+        [KeyboardButton("👤 הפרופיל שלי"), KeyboardButton("❓ עזרה")],
         [KeyboardButton("📢 שיתוף הבוט לקבלת הורדות")]
     ]
     if user_id == ADMIN_ID:
         kb.append([KeyboardButton("📣 פרסום הודעה לכולם")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
-
-async def open_telegram(app):
-    # פונקציה זו תרוץ רק אם יש סביבת דפדפן (כמו בטלפון)
-    if os.name == 'posix' and not os.getenv("RAILWAY_STATIC_URL"):
-        try:
-            bot_info = await app.bot.get_me()
-            url = f"https://t.me/{bot_info.username}"
-            webbrowser.open(url)
-        except: pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -87,10 +78,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(db)
         return await update.message.reply_text("הפעולה בוטלה.", reply_markup=get_main_keyboard(user_id))
 
+    if text == "👤 הפרופיל שלי":
+        credits = db.get(uid, {}).get("credits", 0)
+        profile_text = (
+            f"👤 **הפרופיל שלך:**\n\n"
+            f"🆔 מזהה: `{user_id}`\n"
+            f"🎵 הורדות שנותרו: {credits}\n\n"
+            f"💡 רוצה עוד הורדות? לחץ על כפתור השיתוף בתפריט!"
+        )
+        return await update.message.reply_text(profile_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
+
+    if text == "❓ עזרה":
+        help_text = (
+            "❓ **איך משתמשים בבוט?**\n\n"
+            "1️⃣ לחץ על חיפוש לפי שיר או זמר.\n"
+            "2️⃣ הקלד את השם שאתה מחפש.\n"
+            "3️⃣ בחר את השיר מהרשימה שתופיע.\n"
+            "4️⃣ לחלופין: פשוט שלח לינק מיוטיוב והבוט יוריד אותו מיד.\n\n"
+            "📢 על כל חבר שיצטרף דרך הלינק שלך תקבל 5 הורדות נוספות!"
+        )
+        return await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
+
     if text == "📢 שיתוף הבוט לקבלת הורדות":
         bot_info = await context.bot.get_me()
         share_text = f"מצאתי בוט מטורף להורדת שירים מיוטיוב בחינם! 🎶🔥\nhttps://t.me/{bot_info.username}?start={user_id}"
-        markup = InlineKeyboardMarkup(InlineKeyboardButton("🚀 בחר חבר לשיתוף", switch_inline_query=share_text))
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 בחר חבר לשיתוף", switch_inline_query=share_text)]])
         return await update.message.reply_text("לחץ למטה לשיתוף מהיר:", reply_markup=markup)
 
     if text == "📣 פרסום הודעה לכולם" and is_admin:
@@ -170,7 +182,6 @@ async def download_logic(update, context, url, query=None):
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    asyncio.get_event_loop().create_task(open_telegram(app))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_query))
