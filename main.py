@@ -134,10 +134,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 v_id = i.get('id', {}).get('videoId')
                 if v_id:
                     title = i['snippet']['title'][:55]
-                    buttons.append([InlineKeyboardButton(title, callback_data=f"dl_{v_id}")] )
+                    buttons.append([InlineKeyboardButton(title, callback_data=f"dl_{v_id}")])
             
             await status.delete()
-            # שליחת התוצאות עם המקלדת הראשית כדי לוודא שאינה נעלמת
             return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             return await status.edit_text(f"❌ תקלה: {str(e)}", reply_markup=get_main_keyboard(user_id))
@@ -160,7 +159,8 @@ async def download_logic(update, context, url, query=None):
                 'format': 'bestaudio/best',
                 'outtmpl': 'tmp_%(id)s.%(ext)s',
                 'quiet': True,
-                'no_warnings': True
+                'no_warnings': True,
+                'nocheckcertificate': True
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -169,15 +169,17 @@ async def download_logic(update, context, url, query=None):
                 os.rename(ydl.prepare_filename(info), path)
                 return title, path
         except Exception as e:
-            print(f"Download Error: {e}")
             return None, None
 
     title, filename = await asyncio.get_running_loop().run_in_executor(executor, run_download)
     if title and filename:
-        with open(filename, 'rb') as f:
-            await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
-        os.remove(filename)
-        await status_msg.delete()
+        try:
+            with open(filename, 'rb') as f:
+                await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
+            os.remove(filename)
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.edit_text("❌ שגיאה בשליחת הקובץ.")
     else:
         await status_msg.edit_text("❌ הורדה נכשלה. נסה שוב מאוחר יותר.")
 
