@@ -4,9 +4,14 @@ import asyncio
 import yt_dlp
 import requests
 import re
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+
+# הגדרת לוגים בסיסית כדי לראות שגיאות ב-Railway
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- הגדרות ---
 TOKEN = os.getenv("BOT_TOKEN", "8670146396:AAFM4nhtzxS9NEfD3Dn-RkAGkftYelMXqug")
@@ -37,6 +42,11 @@ def get_main_keyboard(user_id, searching=False):
     if user_id == ADMIN_ID:
         kb.append([KeyboardButton("📣 פרסום הודעה לכולם"), KeyboardButton("📊 סטטיסטיקת בוט")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True, input_field_placeholder=placeholder)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("❌ קרתה תקלה פנימית, הבוט ממשיך לעבוד. נסה שוב.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -85,14 +95,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = await update.message.reply_text("🔍 מחפש...")
         try:
             def fetch():
-                return requests.get(f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}", timeout=15).json()
+                r = requests.get(f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}", timeout=15)
+                return r.json()
             res = await asyncio.get_event_loop().run_in_executor(None, fetch)
             items = res.get('items', [])
-            if not items: return await status.edit_text("לא נמצאו תוצאות.", reply_markup=get_main_keyboard(user_id))
+            if not items:
+                err = res.get("error", {}).get("message", "לא נמצאו תוצאות.")
+                return await status.edit_text(f"❌ שגיאה: {err}", reply_markup=get_main_keyboard(user_id))
             buttons = [[InlineKeyboardButton(i['snippet']['title'][:55], callback_data=f"dl_{i['id']['videoId']}")] for i in items if i.get('id', {}).get('videoId')]
             await status.delete()
             return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
-        except: return await status.edit_text("❌ תקלה בחיפוש.", reply_markup=get_main_keyboard(user_id))
+        except Exception as e:
+            return await status.edit_text(f"❌ תקלה טכנית: {str(e)}", reply_markup=get_main_keyboard(user_id))
 
     if "youtube.com" in text or "youtu.be" in text:
         asyncio.create_task(download_logic(update, context, text))
@@ -123,11 +137,11 @@ async def download_logic(update, context, url, query=None):
     else: await status.edit_text("❌ נכשל.")
 
 def main():
-    # הגדרות רשת מורחבות ללא rate-limiter למניעת שגיאות התקנה
-    app = Application.builder().token(TOKEN).write_timeout(300).read_timeout(300).connect_timeout(300).pool_timeout(300).build()
+    app = Application.builder().token(TOKEN).write_timeout(300).read_timeout(300).connect_timeout(300).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_query))
+    app.add_error_handler(error_handler) # הוספת מטפל השגיאות
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
