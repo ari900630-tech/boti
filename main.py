@@ -6,7 +6,7 @@ import requests
 import re
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, AIORateLimiter
 
 # --- הגדרות ---
 TOKEN = os.getenv("BOT_TOKEN", "8670146396:AAFM4nhtzxS9NEfD3Dn-RkAGkftYelMXqug")
@@ -100,7 +100,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("מוריד...")
-    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?{update.callback_query.data.split('_')[1]}", update.callback_query))
+    v_id = update.callback_query.data.split('_')[1]
+    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", update.callback_query))
 
 async def download_logic(update, context, url, query=None):
     target = query.message if query else update.message
@@ -117,13 +118,14 @@ async def download_logic(update, context, url, query=None):
     title, path = await asyncio.get_running_loop().run_in_executor(executor, run)
     if title and path:
         try:
-            with open(path, 'rb') as f: await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
+            with open(path, 'rb') as f: await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title, write_timeout=300)
             os.remove(path); await status.delete()
         except: await status.edit_text("❌ שגיאה בשליחה.")
     else: await status.edit_text("❌ נכשל.")
 
 def main():
-    app = Application.builder().token(TOKEN).write_timeout(120).read_timeout(120).connect_timeout(120).build()
+    # הגדרות רשת מורחבות למניעת ניתוקים ב-Railway
+    app = Application.builder().token(TOKEN).rate_limiter(AIORateLimiter()).write_timeout(300).read_timeout(300).connect_timeout(300).pool_timeout(300).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_query))
