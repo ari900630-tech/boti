@@ -30,7 +30,6 @@ def clean_filename(title):
     return " ".join(clean.split())
 
 def get_main_keyboard(user_id, searching=False):
-    # שימוש ב-is_persistent וב-input_field_placeholder כדי לשמור על כפתור ה-4 נקודות זמין תמיד
     placeholder = "🔍 הקלד שם לחיפוש..." if searching else "בחר פעולה מהתפריט (כפתור ה-4 נקודות)"
     
     if searching:
@@ -127,22 +126,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             items = res.get('items', [])
             
             if not items:
-                # אם אין תוצאות, יכול להיות שה-API KEY לא תקין או נגמרה המכסה
-                if "error" in res:
-                    return await status.edit_text(f"❌ שגיאת API: {res['error'].get('message', 'Unknown error')}", reply_markup=get_main_keyboard(user_id))
-                return await status.edit_text("לא נמצאו תוצאות.", reply_markup=get_main_keyboard(user_id))
+                error_msg = res.get("error", {}).get("message", "לא נמצאו תוצאות.")
+                return await status.edit_text(f"❌ שגיאה: {error_msg}", reply_markup=get_main_keyboard(user_id))
             
             buttons = []
             for i in items:
                 v_id = i.get('id', {}).get('videoId')
                 if v_id:
                     title = i['snippet']['title'][:55]
-                    buttons.append([InlineKeyboardButton(title, callback_data=f"dl_{v_id}")])
+                    buttons.append([InlineKeyboardButton(title, callback_data=f"dl_{v_id}")] )
             
             await status.delete()
+            # שליחת התוצאות עם המקלדת הראשית כדי לוודא שאינה נעלמת
             return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
-            return await status.edit_text(f"❌ תקלה בתקשורת: {str(e)}", reply_markup=get_main_keyboard(user_id))
+            return await status.edit_text(f"❌ תקלה: {str(e)}", reply_markup=get_main_keyboard(user_id))
 
     if "youtube.com" in text or "youtu.be" in text:
         asyncio.create_task(download_logic(update, context, text))
@@ -158,14 +156,21 @@ async def download_logic(update, context, url, query=None):
     
     def run_download():
         try:
-            ydl_opts = {'format': 'bestaudio/best', 'outtmpl': 'tmp_%(id)s.%(ext)s', 'quiet': True}
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': 'tmp_%(id)s.%(ext)s',
+                'quiet': True,
+                'no_warnings': True
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = clean_filename(info.get('title', 'song'))
                 path = f"{title}.mp3"
                 os.rename(ydl.prepare_filename(info), path)
                 return title, path
-        except: return None, None
+        except Exception as e:
+            print(f"Download Error: {e}")
+            return None, None
 
     title, filename = await asyncio.get_running_loop().run_in_executor(executor, run_download)
     if title and filename:
@@ -173,7 +178,8 @@ async def download_logic(update, context, url, query=None):
             await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
         os.remove(filename)
         await status_msg.delete()
-    else: await status_msg.edit_text("❌ הורדה נכשלה.")
+    else:
+        await status_msg.edit_text("❌ הורדה נכשלה. נסה שוב מאוחר יותר.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
