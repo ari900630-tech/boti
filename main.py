@@ -6,7 +6,7 @@ import requests
 import re
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, AIORateLimiter
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # --- הגדרות ---
 TOKEN = os.getenv("BOT_TOKEN", "8670146396:AAFM4nhtzxS9NEfD3Dn-RkAGkftYelMXqug")
@@ -44,7 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(user_id) not in db:
         db[str(user_id)] = {"credits": 5, "state": None}
         save_db(db)
-    await update.message.reply_text("🚀 ברוך הבא לבוט ההורדות!\nהמקלדת זמינה תמיד דרך כפתור ה-4 נקודות בשורת הכתיבה.", reply_markup=get_main_keyboard(user_id))
+    await update.message.reply_text("🚀 ברוך הבא לבוט ההורדות!\nהמקלדת זמינה תמיד דרך כפתור ה-4 נקודות.", reply_markup=get_main_keyboard(user_id))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -54,8 +54,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if text == "❌ ביטול פעולה":
-        db[uid]["state"] = None
-        save_db(db)
+        db[uid]["state"] = None; save_db(db)
         return await update.message.reply_text("הפעולה בוטלה.", reply_markup=get_main_keyboard(user_id))
 
     if text == "📊 סטטיסטיקת בוט" and is_admin:
@@ -124,8 +123,8 @@ async def download_logic(update, context, url, query=None):
     else: await status.edit_text("❌ נכשל.")
 
 def main():
-    # הגדרות רשת מורחבות למניעת ניתוקים ב-Railway
-    app = Application.builder().token(TOKEN).rate_limiter(AIORateLimiter()).write_timeout(300).read_timeout(300).connect_timeout(300).pool_timeout(300).build()
+    # הגדרות רשת מורחבות ללא rate-limiter למניעת שגיאות התקנה
+    app = Application.builder().token(TOKEN).write_timeout(300).read_timeout(300).connect_timeout(300).pool_timeout(300).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_query))
