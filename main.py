@@ -49,7 +49,7 @@ def get_main_keyboard(user_id, searching=False):
         kb, 
         resize_keyboard=True, 
         is_persistent=True,
-        input_field_placeholder="בחר פעולה מהתפריט (כפתור ה-4 נקודות)"
+        input_field_placeholder="בחר פעולה (כפתור ה-4 נקודות)"
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(db)
     
     await update.message.reply_text(
-        "🚀 ברוך הבא לבוט ההורדות!\nהמקלדת זמינה תמיד דרך כפתור ה-4 נקודות בשורת הכתיבה.",
+        "🚀 ברוך הבא לבוט ההורדות!\nהמקלדת זמינה תמיד דרך כפתור ה-4 נקודות.",
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -76,68 +76,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "❌ ביטול פעולה":
         db[uid]["state"] = None
         save_db(db)
-        return await update.message.reply_text("חזרנו לתפריט הראשי.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text("בוטל.", reply_markup=get_main_keyboard(user_id))
 
     if text == "📊 סטטיסטיקת בוט" and is_admin:
         user_count = len(db.keys())
-        return await update.message.reply_text(f"📊 **סטטיסטיקה למנהל:**\nסה\"כ משתמשים: {user_count}", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text(f"📊 משתמשים: {user_count}", reply_markup=get_main_keyboard(user_id))
 
     if text == "📢 שיתוף הבוט לקבלת הורדות":
         bot_info = await context.bot.get_me()
-        share_text = f"מצאתי בוט מטורף להורדת שירים מיוטיוב בחינם! 🎶🔥\nhttps://t.me/{bot_info.username}?start={user_id}"
+        share_text = f"מצאתי בוט מטורף להורדת שירים! 🎶\nhttps://t.me/{bot_info.username}?start={user_id}"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 שיתוף מהיר", switch_inline_query=share_text)]])
-        return await update.message.reply_text("לחץ על הכפתור למטה כדי לבחור למי לשלוח:", reply_markup=markup)
+        return await update.message.reply_text("שתף את הבוט:", reply_markup=markup)
 
     if text == "📣 פרסום הודעה לכולם" and is_admin:
         db[uid]["state"] = "broadcasting"
         save_db(db)
-        return await update.message.reply_text("שלח את ההודעה שברצונך להפיץ לכל המשתמשים:", reply_markup=get_main_keyboard(user_id, True))
+        return await update.message.reply_text("שלח הודעה להפצה:", reply_markup=get_main_keyboard(user_id, True))
 
     if db.get(uid, {}).get("state") == "broadcasting" and is_admin:
         db[uid]["state"] = None
         save_db(db)
         count = 0
-        status = await update.message.reply_text("📣 מפיץ הודעה...")
         for user in db.keys():
             try:
-                await context.bot.send_message(chat_id=int(user), text=f"📢 **הודעה מהנהלת הבוט:**\n\n{text}")
+                await context.bot.send_message(chat_id=int(user), text=text)
                 count += 1
             except: pass
-        return await status.edit_text(f"✅ ההודעה נשלחה בהצלחה ל-{count} משתמשים.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text(f"✅ נשלח ל-{count} משתמשים.", reply_markup=get_main_keyboard(user_id))
 
     if text in ["🎤 חיפוש לפי שם זמר", "🎵 חיפוש לפי שם שיר"]:
         db[uid]["state"] = "searching"
         save_db(db)
-        return await update.message.reply_text(f"הקלד את שם ה{'זמר' if 'זמר' in text else 'שיר'} (עד 100 תוצאות):", reply_markup=get_main_keyboard(user_id, True))
+        return await update.message.reply_text(f"הקלד שם לחיפוש (עד 100 תוצאות):", reply_markup=get_main_keyboard(user_id, True))
 
     if db.get(uid, {}).get("state") == "searching":
         db[uid]["state"] = None
         save_db(db)
         status = await update.message.reply_text("🔍 מחפש ביוטיוב...")
+        
         try:
-            url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}"
-            res = requests.get(url).json()
+            # שימוש ב-executor כדי לא לתקוע את הבוט בזמן החיפוש
+            def fetch_yt():
+                url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}"
+                return requests.get(url, timeout=10).json()
+
+            res = await asyncio.get_event_loop().run_in_executor(None, fetch_yt)
             items = res.get('items', [])
-            buttons = [[InlineKeyboardButton(i['snippet']['title'][:55], callback_data=f"dl_{i['id']['videoId']}")] for i in items if i.get('id', {}).get('videoId')]
+            buttons = []
+            for i in items:
+                v_id = i.get('id', {}).get('videoId')
+                if v_id:
+                    title = i['snippet']['title'][:55]
+                    buttons.append([InlineKeyboardButton(title, callback_data=f"dl_{v_id}")])
             
             if not buttons:
-                return await status.edit_text("לא נמצאו תוצאות.", reply_markup=get_main_keyboard(user_id))
+                return await status.edit_text("לא נמצאו תוצאות. נסה שם אחר.", reply_markup=get_main_keyboard(user_id))
             
             await status.delete()
             return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
-        except: return await status.edit_text("❌ שגיאה בחיפוש.", reply_markup=get_main_keyboard(user_id))
+        except Exception as e:
+            return await status.edit_text(f"❌ שגיאה בחיפוש. וודא שה-API Key תקין.", reply_markup=get_main_keyboard(user_id))
 
     if "youtube.com" in text or "youtu.be" in text:
         asyncio.create_task(download_logic(update, context, text))
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer("מתחיל הורדה... 🚀")
+    await update.callback_query.answer("מתחיל הורדה...")
     v_id = update.callback_query.data.split('_')[1]
     asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", update.callback_query))
 
 async def download_logic(update, context, url, query=None):
     target = query.message if query else update.message
-    status_msg = await target.reply_text("⏳ מוריד שיר...")
+    status_msg = await target.reply_text("⏳ מוריד...")
     
     def run_download():
         try:
@@ -156,7 +166,7 @@ async def download_logic(update, context, url, query=None):
             await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
         os.remove(filename)
         await status_msg.delete()
-    else: await status_msg.edit_text("❌ ההורדה נכשלה.")
+    else: await status_msg.edit_text("❌ נכשל.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
