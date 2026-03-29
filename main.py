@@ -4,12 +4,12 @@ import asyncio
 import yt_dlp
 import requests
 import re
-import webbrowser
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- הגדרות בטוחות לשרת ---
+# --- הגדרות שרת ---
 TOKEN = os.getenv("BOT_TOKEN", "8670146396:AAFM4nhtzxS9NEfD3Dn-RkAGkftYelMXqug")
 YOUTUBE_API_KEY = os.getenv("YT_API_KEY", "AIzaSyAKK4VTbQJ_8tsHfxb2tcDZ9SSR9gWXH-0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 8708085965))
@@ -17,6 +17,7 @@ DB_FILE = "users_data.json"
 
 executor = ThreadPoolExecutor(max_workers=20)
 
+# --- ניהול בסיס נתונים ---
 def load_db():
     if not os.path.exists(DB_FILE): return {}
     try:
@@ -24,167 +25,244 @@ def load_db():
     except: return {}
 
 def save_db(db):
-    with open(DB_FILE, "w", encoding='utf-8') as f: json.dump(db, f, indent=4)
+    with open(DB_FILE, "w", encoding='utf-8') as f: json.dump(db, f, indent=4, ensure_ascii=False)
 
-def clean_filename(title):
-    clean = re.sub(r'[\\/*?:"<>|]', "", title)
-    return " ".join(clean.split())
+def update_activity(uid, db):
+    hour = str(datetime.now().hour)
+    user_data = db.get(uid, {})
+    activity = user_data.get("activity_log", {})
+    activity[hour] = activity.get(hour, 0) + 1
+    user_data["activity_log"] = activity
+    db[uid] = user_data
+    save_db(db)
 
-def get_main_keyboard(user_id, searching=False):
-    if searching:
-        return ReplyKeyboardMarkup([[KeyboardButton("❌ ביטול פעולה")]], resize_keyboard=True, is_persistent=True)
-    
+def get_peak_hour(uid, db):
+    activity = db.get(uid, {}).get("activity_log", {})
+    if not activity: return 20 # ברירת מחדל שמונה בערב
+    return int(max(activity, key=activity.get))
+
+# --- עיצובים (Themes) ---
+THEMES = {
+    "קלאסי 🎹": {"search_s": "🎤", "search_m": "🎵", "profile": "👤", "help": "❓", "share": "📢", "settings": "⚙️", "stats": "📊", "back": "🔙"},
+    "ניאון ⚡": {"search_s": "🎙️", "search_m": "🎧", "profile": "💎", "help": "💡", "share": "🔥", "settings": "🛠️", "stats": "📈", "back": "⬅️"},
+    "טבע 🌿": {"search_s": "🦜", "search_m": "🍀", "profile": "🌳", "help": "🍄", "share": "🌊", "settings": "⚙️", "stats": "🌻", "back": "🪵"}
+}
+
+def get_icon(uid, db, key):
+    theme_name = db.get(uid, {}).get("theme", "קלאסי 🎹")
+    return THEMES.get(theme_name, THEMES["קלאסי 🎹"]).get(key, "✨")
+
+# --- מקלדות ---
+def get_main_keyboard(user_id, db):
+    uid = str(user_id)
     kb = [
-        [KeyboardButton("🎤 חיפוש לפי שם זמר"), KeyboardButton("🎵 חיפוש לפי שם שיר")],
-        [KeyboardButton("👤 הפרופיל שלי"), KeyboardButton("❓ עזרה")],
-        [KeyboardButton("📢 שיתוף הבוט לקבלת הורדות")]
+        [KeyboardButton(f"{get_icon(uid, db, 'search_s')} חיפוש לפי שם זמר"), KeyboardButton(f"{get_icon(uid, db, 'search_m')} חיפוש לפי שם שיר")],
+        [KeyboardButton(f"{get_icon(uid, db, 'profile')} הפרופיל שלי"), KeyboardButton(f"{get_icon(uid, db, 'settings')} הגדרות")],
+        [KeyboardButton(f"{get_icon(uid, db, 'help')} עזרה"), KeyboardButton(f"{get_icon(uid, db, 'share')} שיתוף הבוט")]
     ]
     if user_id == ADMIN_ID:
-        kb.append([KeyboardButton("📣 פרסום הודעה לכולם")])
+        kb.append([KeyboardButton(f"{get_icon(uid, db, 'stats')} סטטיסטיקת בוט")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
 
+def get_settings_keyboard(uid, db):
+    notif_status = "✅ פעיל" if db.get(uid, {}).get("notifications", True) else "❌ כבוי"
+    kb = [
+        [KeyboardButton("🎨 שינוי עיצוב כפתורים")],
+        [KeyboardButton("💾 הגדרת פורמט קבוע"), KeyboardButton("🔊 הגדרת איכות קבועה")],
+        [KeyboardButton(f"🔔 תזכורת יומית: {notif_status}")],
+        [KeyboardButton(f"{get_icon(uid, db, 'back')} חזור")]
+    ]
+    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+
+# --- פונקציות עזר ---
+def get_greeting():
+    hour = datetime.now().hour
+    current_time = datetime.now().strftime("%H:%M")
+    if 5 <= hour < 12: greet = "בוקר טוב ☀️"
+    elif 12 <= hour < 18: greet = "צהריים טובים 🌤️"
+    elif 18 <= hour < 22: greet = "ערב טוב 🌙"
+    else: greet = "לילה טוב ✨"
+    return f"שלום! השעה עכשיו {current_time}. {greet}"
+
+def clean_filename(title):
+    return " ".join(re.sub(r'[\\/*?:"<>|]', "", title).split())
+
+# --- לוגיקה ראשית ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db = load_db()
     uid = str(user_id)
     
-    args = context.args
-    if args and args[0].isdigit():
-        referrer_id = args[0]
-        if uid not in db and referrer_id != uid:
-            if referrer_id in db:
-                db[referrer_id]["credits"] = db[referrer_id].get("credits", 0) + 5
-                save_db(db)
-                try: await context.bot.send_message(chat_id=int(referrer_id), text="🎁 חבר נרשם דרכך! קיבלת 5 הורדות בונוס.")
-                except: pass
-
     if uid not in db:
-        db[uid] = {"credits": 5, "state": None}
+        db[uid] = {
+            "credits": 5, "state": None, "theme": "קלאסי 🎹",
+            "default_format": None, "default_quality": None,
+            "notifications": True, "activity_log": {}, "last_notified": ""
+        }
         save_db(db)
     
-    is_admin = (user_id == ADMIN_ID)
-    msg = "👑 שלום אדוני המנהל!" if is_admin else f"🚀 ברוך הבא!\nנותרו לך {db[uid]['credits']} הורדות."
-    await update.message.reply_text(msg, reply_markup=get_main_keyboard(user_id))
+    await update.message.reply_text(get_greeting(), reply_markup=get_main_keyboard(user_id, db))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     uid = str(user_id)
     text = update.message.text
     db = load_db()
+    update_activity(uid, db)
     is_admin = (user_id == ADMIN_ID)
 
-    if text == "❌ ביטול פעולה":
+    # --- ניווט וחזור ---
+    if "חזור" in text:
         db[uid]["state"] = None
         save_db(db)
-        return await update.message.reply_text("הפעולה בוטלה.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text("חזרנו לתפריט הראשי.", reply_markup=get_main_keyboard(user_id, db))
 
-    if text == "👤 הפרופיל שלי":
-        credits = db.get(uid, {}).get("credits", 0)
-        profile_text = (
-            f"👤 **הפרופיל שלך:**\n\n"
-            f"🆔 מזהה: `{user_id}`\n"
-            f"🎵 הורדות שנותרו: {credits}\n\n"
-            f"💡 רוצה עוד הורדות? לחץ על כפתור השיתוף בתפריט!"
-        )
-        return await update.message.reply_text(profile_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
-
-    if text == "❓ עזרה":
-        help_text = (
-            "❓ **איך משתמשים בבוט?**\n\n"
-            "1️⃣ לחץ על חיפוש לפי שיר או זמר.\n"
-            "2️⃣ הקלד את השם שאתה מחפש.\n"
-            "3️⃣ בחר את השיר מהרשימה שתופיע.\n"
-            "4️⃣ לחלופין: פשוט שלח לינק מיוטיוב והבוט יוריד אותו מיד.\n\n"
-            "📢 על כל חבר שיצטרף דרך הלינק שלך תקבל 5 הורדות נוספות!"
-        )
-        return await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
-
-    if text == "📢 שיתוף הבוט לקבלת הורדות":
-        bot_info = await context.bot.get_me()
-        share_text = f"מצאתי בוט מטורף להורדת שירים מיוטיוב בחינם! 🎶🔥\nhttps://t.me/{bot_info.username}?start={user_id}"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 בחר חבר לשיתוף", switch_inline_query=share_text)]])
-        return await update.message.reply_text("לחץ למטה לשיתוף מהיר:", reply_markup=markup)
-
-    if text == "📣 פרסום הודעה לכולם" and is_admin:
-        db[uid]["state"] = "broadcasting"
+    # --- הגדרות ---
+    if "הגדרות" in text:
+        db[uid]["state"] = "in_settings"
         save_db(db)
-        return await update.message.reply_text("כתוב את ההודעה להפצה:", reply_markup=get_main_keyboard(user_id, True))
+        return await update.message.reply_text("⚙️ **מרכז הגדרות:**\nכאן תוכל להתאים את הבוט לצרכים שלך.", reply_markup=get_settings_keyboard(uid, db), parse_mode="Markdown")
 
-    if db.get(uid, {}).get("state") == "broadcasting" and is_admin:
-        db[uid]["state"] = None
+    if text == "🎨 שינוי עיצוב כפתורים":
+        kb = [[KeyboardButton(t)] for t in THEMES.keys()]
+        kb.append([KeyboardButton(f"{get_icon(uid, db, 'back')} חזור")])
+        return await update.message.reply_text("בחר ערכת נושא חדשה:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+    if text in THEMES.keys():
+        db[uid]["theme"] = text
         save_db(db)
-        count = 0
-        status = await update.message.reply_text("📣 מפיץ...")
-        for user in db.keys():
-            try:
-                await context.bot.send_message(chat_id=int(user), text=f"📢 **הודעה מההנהלה:**\n\n{text}", parse_mode="Markdown")
-                count += 1
-            except: pass
-        return await status.edit_text(f"✅ נשלח ל-{count} משתמשים.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text(f"העיצוב שונה ל-{text}!", reply_markup=get_settings_keyboard(uid, db))
 
-    if text in ["🎤 חיפוש לפי שם זמר", "🎵 חיפוש לפי שם שיר"]:
+    if text == "💾 הגדרת פורמט קבוע":
+        kb = [[KeyboardButton(f"קבע: {f}")] for f in ["mp3", "wav", "m4a"]]
+        kb.append([KeyboardButton("❌ ביטול הגדרה קבועה"), KeyboardButton(f"{get_icon(uid, db, 'back')} חזור")])
+        return await update.message.reply_text("בחר פורמט שייבחר תמיד אוטומטית:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+    if text.startswith("קבע: "):
+        val = text.split(": ")[1]
+        if val in ["mp3", "wav", "m4a"]:
+            db[uid]["default_format"] = val
+        else:
+            db[uid]["default_quality"] = val
+        save_db(db)
+        return await update.message.reply_text(f"הגדרה נשמרה: {val}", reply_markup=get_settings_keyboard(uid, db))
+
+    if text == "❌ ביטול הגדרה קבועה":
+        db[uid]["default_format"] = None
+        db[uid]["default_quality"] = None
+        save_db(db)
+        return await update.message.reply_text("הגדרות ברירת המחדל בוטלו.", reply_markup=get_settings_keyboard(uid, db))
+
+    if text.startswith("🔔 תזכורת יומית"):
+        db[uid]["notifications"] = not db.get(uid, {}).get("notifications", True)
+        save_db(db)
+        return await update.message.reply_text("הגדרת התזכורת עודכנה.", reply_markup=get_settings_keyboard(uid, db))
+
+    # --- לוגיקת הורדה וחיפוש (המקורית שלך) ---
+    if "חיפוש" in text:
         db[uid]["state"] = "searching"
         save_db(db)
-        return await update.message.reply_text(f"הקלד את שם ה{'זמר' if 'זמר' in text else 'שיר'}:", reply_markup=get_main_keyboard(user_id, True))
+        return await update.message.reply_text("מה לחפש?")
 
     if db.get(uid, {}).get("state") == "searching":
         db[uid]["state"] = None
         save_db(db)
-        status = await update.message.reply_text("🔍 מחפש (100 תוצאות)...")
-        try:
-            url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}"
-            res = await asyncio.get_event_loop().run_in_executor(None, lambda: requests.get(url, timeout=15).json())
-            buttons = [[InlineKeyboardButton(i['snippet']['title'][:55], callback_data=f"dl_{i['id']['videoId']}")] for i in res.get('items', []) if i.get('id', {}).get('videoId')]
-            if not buttons: return await status.edit_text("לא נמצאו תוצאות.", reply_markup=get_main_keyboard(user_id))
-            await status.delete()
-            return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
-        except: return await status.edit_text("❌ שגיאה.", reply_markup=get_main_keyboard(user_id))
+        status = await update.message.reply_text("🔍 מחפש...")
+        url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=10&type=video&key={YOUTUBE_API_KEY}"
+        res = requests.get(url).json()
+        buttons = [[InlineKeyboardButton(i['snippet']['title'][:50], callback_data=f"setup_{i['id']['videoId']}")] for i in res.get('items', [])]
+        await status.delete()
+        return await update.message.reply_text("תוצאות:", reply_markup=InlineKeyboardMarkup(buttons))
 
     if "youtube.com" in text or "youtu.be" in text:
-        if not is_admin and db.get(uid, {}).get("credits", 0) <= 0:
-            return await update.message.reply_text("⚠️ נגמרו לך ההורדות!")
-        asyncio.create_task(download_logic(update, context, text))
+        await prepare_download(update, context, text, uid, db)
+
+async def prepare_download(update, context, url, uid, db):
+    # בדיקה אם יש הגדרות קבועות
+    def_format = db[uid].get("default_format")
+    def_quality = db[uid].get("default_quality", "192")
+    
+    if def_format:
+        await download_logic(update, context, url, def_format, def_quality)
+    else:
+        db[uid]["pending_url"] = url
+        db[uid]["state"] = "choosing_format"
+        save_db(db)
+        kb = [[KeyboardButton(f)] for f in ["mp3", "wav", "m4a"]]
+        await update.message.reply_text("בחר פורמט:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.callback_query.data
+    uid = str(update.effective_user.id)
+    db = load_db()
+    if data.startswith("setup_"):
+        v_url = f"https://www.youtube.com/watch?v={data.split('_')[1]}"
+        await update.callback_query.answer()
+        await prepare_download(update, context, v_url, uid, db)
+
+async def download_logic(update, context, url, fmt, quality):
     user_id = update.effective_user.id
     db = load_db()
     if user_id != ADMIN_ID and db.get(str(user_id), {}).get("credits", 0) <= 0:
-        return await update.callback_query.answer("אין הורדות!", show_alert=True)
-    await update.callback_query.answer("מתחיל...")
-    v_id = update.callback_query.data.split('_')[1]
-    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", update.callback_query))
+        return await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ אין הורדות!")
 
-async def download_logic(update, context, url, query=None):
-    user_id = update.effective_user.id
-    target = query.message if query else update.message
-    status_msg = await target.reply_text("⏳ מוריד...")
+    status = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⏳ מוריד בפורמט {fmt}...")
     
-    def run_download():
+    def run():
         try:
-            ydl_opts = {'format': 'bestaudio/best', 'outtmpl': 'tmp_%(id)s.%(ext)s', 'quiet': True}
+            ydl_opts = {
+                'format': 'bestaudio/best', 'outtmpl': 'tmp_%(id)s.%(ext)s', 'quiet': True,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': fmt, 'preferredquality': quality}]
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = clean_filename(info.get('title', 'song'))
-                path = f"{title}.mp3"
-                os.rename(ydl.prepare_filename(info), path)
-                return title, path
+                tmp = ydl.prepare_filename(info).rsplit('.', 1)[0] + f".{fmt}"
+                final = f"{title}.{fmt}"
+                if os.path.exists(tmp):
+                    os.rename(tmp, final)
+                    return title, final
         except: return None, None
 
-    title, filename = await asyncio.get_running_loop().run_in_executor(executor, run_download)
-    if title and filename:
-        with open(filename, 'rb') as f:
+    title, file = await asyncio.get_running_loop().run_in_executor(executor, run)
+    if file:
+        with open(file, 'rb') as f:
             await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title=title)
-        os.remove(filename)
-        await status_msg.delete()
+        os.remove(file)
+        await status.delete()
         if user_id != ADMIN_ID:
-            db = load_db(); db[str(user_id)]["credits"] -= 1; save_db(db)
-    else: await status_msg.edit_text("❌ נכשל.", reply_markup=get_main_keyboard(user_id))
+            db[str(user_id)]["credits"] -= 1; save_db(db)
+    else: await status.edit_text("❌ נכשל.")
+
+# --- מנגנון תזכורת חכם (רץ ברקע) ---
+async def daily_reminder(app):
+    while True:
+        now = datetime.now()
+        db = load_db()
+        for uid, data in db.items():
+            if data.get("notifications", True):
+                peak = get_peak_hour(uid, db)
+                last_notified = data.get("last_notified", "")
+                today = now.strftime("%Y-%m-%d")
+                
+                if now.hour == peak and last_notified != today:
+                    try:
+                        await app.bot.send_message(chat_id=int(uid), text="🎶 זמן מעולה להוריד שיר חדש! מה בא לך לשמוע היום?")
+                        db[uid]["last_notified"] = today
+                        save_db(db)
+                    except: pass
+        await asyncio.sleep(3600) # בדיקה פעם בשעה
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(callback_query))
+    
+    loop = asyncio.get_event_loop()
+    loop.create_task(daily_reminder(app))
+    
+    print("Bot is alive...")
     app.run_polling()
 
 if __name__ == '__main__': main()
