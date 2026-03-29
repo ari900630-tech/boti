@@ -5,7 +5,7 @@ import yt_dlp
 import requests
 import re
 from concurrent.futures import ThreadPoolExecutor
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # --- הגדרות ---
@@ -31,16 +31,17 @@ def clean_filename(title):
 
 def get_main_keyboard(user_id, searching=False):
     if searching:
+        # במצב חיפוש המקלדת נשארת עד לביטול
         return ReplyKeyboardMarkup([[KeyboardButton("❌ ביטול פעולה")]], resize_keyboard=True, is_persistent=True)
     
     kb = [
         [KeyboardButton("🎤 חיפוש לפי שם זמר"), KeyboardButton("🎵 חיפוש לפי שם שיר")],
-        [KeyboardButton("📢 שיתוף הבוט לקבלת הורדות")],
-        [KeyboardButton("⌨️ סגור תפריט מקלדת")]
+        [KeyboardButton("📢 שיתוף הבוט לקבלת הורדות")]
     ]
     if user_id == ADMIN_ID:
         kb.append([KeyboardButton("📣 פרסום הודעה"), KeyboardButton("📊 סטטיסטיקת בוט")])
     
+    # is_persistent=True משאיר את כפתור ה-4 נקודות זמין תמיד לשליטת המשתמש
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -53,7 +54,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(db)
     
     await update.message.reply_text(
-        "🚀 הבוט מוכן! השתמש בתפריט למטה.",
+        "🚀 הבוט מוכן! השתמש בתפריט למטה.\nניתן להסתיר ולהציג את המקלדת בעזרת כפתור ה-4 נקודות.",
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -64,19 +65,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     is_admin = (user_id == ADMIN_ID)
 
-    if text == "⌨️ סגור תפריט מקלדת":
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("⌨️ פתח תפריט מחדש", callback_data="open_kb")]])
-        return await update.message.reply_text("המקלדת הוסתרה. תוכל לפתוח אותה בלחיצה כאן:", reply_markup=ReplyKeyboardRemove()) or \
-               await update.message.reply_text("שליטה במקלדת:", reply_markup=markup)
-
     if text == "❌ ביטול פעולה":
         db[uid]["state"] = None
         save_db(db)
-        return await update.message.reply_text("בוטל.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text("חזרנו לתפריט הראשי.", reply_markup=get_main_keyboard(user_id))
 
     if text == "📊 סטטיסטיקת בוט" and is_admin:
         user_count = len(db.keys())
-        return await update.message.reply_text(f"📊 **סה\"כ משתמשים:** {user_count}", parse_mode="Markdown")
+        return await update.message.reply_text(f"📊 **סה\"כ משתמשים:** {user_count}", reply_markup=get_main_keyboard(user_id))
 
     if text == "📢 שיתוף הבוט לקבלת הורדות":
         bot_info = await context.bot.get_me()
@@ -95,7 +91,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for user in db.keys():
             try: await context.bot.send_message(chat_id=int(user), text=text)
             except: pass
-        return await update.message.reply_text("✅ הופץ.", reply_markup=get_main_keyboard(user_id))
+        return await update.message.reply_text("✅ ההודעה נשלחה לכולם.", reply_markup=get_main_keyboard(user_id))
 
     if text in ["🎤 חיפוש לפי שם זמר", "🎵 חיפוש לפי שם שיר"]:
         db[uid]["state"] = "searching"
@@ -123,17 +119,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(download_logic(update, context, text))
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "open_kb":
-        await query.answer("המקלדת נפתחה!")
-        return await query.message.reply_text("המקלדת חזרה:", reply_markup=get_main_keyboard(update.effective_user.id))
-    
-    await query.answer("מוריד...")
-    v_id = query.data.split('_')[1]
-    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", query))
+    await update.callback_query.answer("מוריד...")
+    v_id = update.callback_query.data.split('_')[1]
+    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", update.callback_query))
 
 async def download_logic(update, context, url, query=None):
-    user_id = update.effective_user.id
     target = query.message if query else update.message
     status_msg = await target.reply_text("⏳ מוריד...")
     
