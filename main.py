@@ -4,7 +4,6 @@ import asyncio
 import yt_dlp
 import requests
 import re
-import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -37,7 +36,7 @@ def get_main_keyboard(user_id, searching=False):
     kb = [
         [KeyboardButton("🎤 חיפוש לפי שם זמר"), KeyboardButton("🎵 חיפוש לפי שם שיר")],
         [KeyboardButton("📢 שיתוף הבוט לקבלת הורדות")],
-        [KeyboardButton("❌ סגור תפריט")]
+        [KeyboardButton("⌨️ סגור תפריט מקלדת")]
     ]
     if user_id == ADMIN_ID:
         kb.append([KeyboardButton("📣 פרסום הודעה"), KeyboardButton("📊 סטטיסטיקת בוט")])
@@ -54,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(db)
     
     await update.message.reply_text(
-        "🚀 הבוט מוכן! השתמש בתפריט למטה.\nניתן לסגור את התפריט בכל עת.",
+        "🚀 הבוט מוכן! השתמש בתפריט למטה.",
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -65,8 +64,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     is_admin = (user_id == ADMIN_ID)
 
-    if text == "❌ סגור תפריט":
-        return await update.message.reply_text("המקלדת נסגרה. שלח /start כדי לפתוח שוב.", reply_markup=ReplyKeyboardRemove())
+    if text == "⌨️ סגור תפריט מקלדת":
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("⌨️ פתח תפריט מחדש", callback_data="open_kb")]])
+        return await update.message.reply_text("המקלדת הוסתרה. תוכל לפתוח אותה בלחיצה כאן:", reply_markup=ReplyKeyboardRemove()) or \
+               await update.message.reply_text("שליטה במקלדת:", reply_markup=markup)
 
     if text == "❌ ביטול פעולה":
         db[uid]["state"] = None
@@ -75,7 +76,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📊 סטטיסטיקת בוט" and is_admin:
         user_count = len(db.keys())
-        return await update.message.reply_text(f"📊 **נתוני הבוט:**\n\nסה\"כ משתמשים רשומים: {user_count}", parse_mode="Markdown")
+        return await update.message.reply_text(f"📊 **סה\"כ משתמשים:** {user_count}", parse_mode="Markdown")
 
     if text == "📢 שיתוף הבוט לקבלת הורדות":
         bot_info = await context.bot.get_me()
@@ -99,27 +100,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ["🎤 חיפוש לפי שם זמר", "🎵 חיפוש לפי שם שיר"]:
         db[uid]["state"] = "searching"
         save_db(db)
-        return await update.message.reply_text("הקלד שם לחיפוש:", reply_markup=get_main_keyboard(user_id, True))
+        return await update.message.reply_text("הקלד שם לחיפוש (עד 100 תוצאות):", reply_markup=get_main_keyboard(user_id, True))
 
     if db.get(uid, {}).get("state") == "searching":
         db[uid]["state"] = None
         save_db(db)
-        status = await update.message.reply_text("🔍 מחפש...")
+        status = await update.message.reply_text("🔍 מחפש ביוטיוב...")
         try:
-            url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=50&type=video&key={YOUTUBE_API_KEY}"
+            url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={text}&maxResults=100&type=video&key={YOUTUBE_API_KEY}"
             res = requests.get(url).json()
-            buttons = [[InlineKeyboardButton(i['snippet']['title'][:50], callback_data=f"dl_{i['id']['videoId']}")] for i in res.get('items', []) if i.get('id', {}).get('videoId')]
+            items = res.get('items', [])
+            buttons = [[InlineKeyboardButton(i['snippet']['title'][:55], callback_data=f"dl_{i['id']['videoId']}")] for i in items if i.get('id', {}).get('videoId')]
+            
+            if not buttons:
+                return await status.edit_text("לא נמצאו תוצאות.", reply_markup=get_main_keyboard(user_id))
+            
             await status.delete()
-            return await update.message.reply_text("תוצאות:", reply_markup=InlineKeyboardMarkup(buttons))
-        except: return await status.edit_text("שגיאה.", reply_markup=get_main_keyboard(user_id))
+            return await update.message.reply_text(f"תוצאות עבור '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
+        except: return await status.edit_text("שגיאה בחיפוש.", reply_markup=get_main_keyboard(user_id))
 
     if "youtube.com" in text or "youtu.be" in text:
         asyncio.create_task(download_logic(update, context, text))
 
 async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer("מוריד...")
-    v_id = update.callback_query.data.split('_')[1]
-    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", update.callback_query))
+    query = update.callback_query
+    if query.data == "open_kb":
+        await query.answer("המקלדת נפתחה!")
+        return await query.message.reply_text("המקלדת חזרה:", reply_markup=get_main_keyboard(update.effective_user.id))
+    
+    await query.answer("מוריד...")
+    v_id = query.data.split('_')[1]
+    asyncio.create_task(download_logic(update, context, f"https://www.youtube.com/watch?v={v_id}", query))
 
 async def download_logic(update, context, url, query=None):
     user_id = update.effective_user.id
